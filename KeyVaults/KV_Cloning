@@ -1,0 +1,253 @@
+<# Build Variables  #>
+
+$location = switch -wildcard ($env:CustomerLocationPrefix)
+{
+    "UNC" {"NorthCentralUS"}
+    "USC" {"SouthCentralUS"}
+    "UE" {"EastUS"}
+    "UW" {"WestUS"}
+    "AUE" {"AustraliaEast"}
+    "AUSE" {"AustraliaSoutheast"}
+    "CC" {"CanadaCentral"}
+    "CE" {"CanadaEast"}
+    "EN*" {"North Europe"}
+    default {write-error "No Deployment Name Defined: $env:CustomerLocationPrefix"; throw "No Deployment Name Defined"}
+}
+
+Write-Output "Location: $location"
+
+###############################################################
+
+
+$Timezone = switch -wildcard ($env:CustomerLocationPrefix)
+{
+    "UNC" {"Central Standard Time"}
+    "USC" {"Central Standard Time"}
+    "UE" {"Eastern Standard Time"}
+    "UW" {"Pacific Standard Time"}
+    "AUE" {"E. Australia Standard Time"}
+    "AUSE" {"E. Australia Standard Time"}
+    "CC" {"Central Standard Time"}
+    "CE" {"Eastern Standard Time"}
+    "EN*" {"Time Zone - North Europe"}
+
+    default {write-error "No Deployment Name Defined: $env:CustomerLocationPrefix"; throw "No Deployment Name Defined"}
+}
+
+Write-Output "Location: $Timezone"
+
+
+########################################################################
+
+$virtualNetworkName = $env:CustomerLocationPrefix + "-" + $env:CustomerDomain + "-" + $env:CustomerNumber + "-" + "VNET"
+
+#####################################################################
+
+$SearchEngine = $env:CustomerLocationPrefix + $env:CustomerDomain + $env:CustomerNumber + "ss01"
+$SearchEngineUrl = $SearchEngine.ToLower()
+
+#################################################################
+
+$rg = $env:CustomerLocationPrefix + "-" + $env:CustomerDomain + "-" + $env:CustomerNumber + "-" + "SERVICES-RG"
+
+######################################################################
+
+If ($env:Type -eq "PERF")
+{
+$kv = "envcreation" + "PRF" + "$env:CustomerID" + "kv"
+$kvname = $kv.ToLower()
+}
+
+else
+
+{
+$kv = "envcreation" + $env:Type + "$env:CustomerID" + "kv"
+$kvname = $kv.ToLower()
+}
+
+
+######Security Classification##################
+
+$RefSecret = "$env:Type" + "$env:CustomerID"
+
+#######################################################
+
+
+
+
+#******************************************************************************
+# Script body
+# Execution begins here
+#******************************************************************************
+$ErrorActionPreference = "continue"
+
+$infraADGroupObjetid = "4119044b-d07b-413b-b127-ba113d5d53a9"
+$AutomationAccountObjectid = "d868037e-4c42-4e16-a1d3-48e770b14b78"
+
+
+switch -wildcard ($env:CustomerDomain)
+{
+    "DEV" {$automationPrincipleObjectid = "0e43d7d9-e52b-4e09-ab30-eaadfdeab815" ; $subscriptionId = "a96fcd90-61dc-498c-8b3e-bd3896585f86"; $customerRefkv = "envcreationcustomerrefkv";$PieplineADGroupObjetid = "24798955-a603-4a12-9460-52f0d7724e4b" }
+    "UAT" {$automationPrincipleObjectid = "8a94afaf-3561-473b-9980-d7c3bc9097b1" ; $subscriptionId = "7e914569-8d38-414d-81c1-2b49a4645582"; $customerRefkv = "envcreationcustrefuatkv"; $PieplineADGroupObjetid = "46de94fd-5d6f-48d3-81da-af23f1b0d4fe" }
+    "PRD" {$automationPrincipleObjectid = "96ae0c94-adf2-4546-ace8-c433c6c62833" ; $subscriptionId = "35f4c8b1-858f-48c6-ac79-6afd28a64ad7"; $customerRefkv = "envcreationcustrefprdkv"; $PieplineADGroupObjetid = "e651af1a-d022-4144-9b56-c1c141357615"}
+
+    default {write-error "No Deployment Name Defined: $env:CustomerDomain"; throw "No Deployment Name Defined"}
+}
+
+# select subscription
+Write-Output "Selecting subscription '$subscriptionId'";
+Select-AzSubscription -SubscriptionID $subscriptionId;
+
+if ($env:DCTServerPassword -eq $env:dctServerUser -or [string]::IsNullOrEmpty($env:DCTServerPassword))
+{
+	Write-Output Generating DCTServerPassword
+	try
+	{
+		$pwGeneration = Invoke-WebRequest -Uri "https://devops-provisioning.azurewebsites.net/api/PasswordGenerator" -UseBasicParsing
+		if ($pwGeneration.StatusCode -eq 200)
+		{$DCTServerPassword = $pwGeneration.Content}
+		else {$DCTServerPassword = $env:DCTServerPassword}
+	}
+	catch {$DCTServerPassword = $env:DCTServerPassword}
+}
+else {$DCTServerPassword = $env:DCTServerPassword}
+
+#########################Key Vault Availability###################################
+
+$vaults = Get-AZKeyVault -VaultName $kvname
+
+if (!$vaults)
+{
+    Write-Output "Creating New $kvname"
+    New-AzKeyVault -Name $kvname -ResourceGroupName $rg -Location $location -Tag @{CustomerID = "$env:CustomerID"}
+}
+else
+{
+
+    Write-Output "$kvname already present in the environment. Exiting"
+    #Exit
+
+}
+
+Start-Sleep  -Seconds 20
+
+ $vault = Get-AZKeyVault -VaultName $kvname
+
+ Set-AzKeyVaultAccessPolicy -inputobject $vault -objectid $AutomationAccountObjectid  -PermissionsToSecrets Get,List,Set,Delete,Recover,Backup,Restore -PassThru -BypassObjectIdValidation
+ Set-AzKeyVaultAccessPolicy -inputobject $vault -objectid $automationPrincipleObjectid  -PermissionsToSecrets Get,List -PassThru -BypassObjectIdValidation
+ Set-AzKeyVaultAccessPolicy -inputobject $vault -objectid $infraADGroupObjetid  -PermissionsToSecrets Get,List,Set,Delete,Recover,Backup,Restore -PassThru -BypassObjectIdValidation
+ Set-AzKeyVaultAccessPolicy -inputobject $vault -objectid $PieplineADGroupObjetid   -PermissionsToSecrets Get,List,Set,Recover,Backup,Restore -PassThru -BypassObjectIdValidation
+
+
+ ##-----------customer reference key vault---------------
+$secretvalue = ConvertTo-SecureString $kvname -AsPlainText -Force
+$secret = Set-AzKeyVaultSecret -VaultName  $customerRefkv -Name $RefSecret -SecretValue $secretvalue -Tag @{CustomerID = $env:CustomerID} #replace name here
+(Get-AzKeyVaultSecret -vaultName $customerRefkv -name $RefSecret).SecretValueText  #just to see the value
+
+
+##--------Creating secrets from Parameters----------------
+Set-AzKeyVaultSecret -VaultName $kvname -Name 'ADSecGroup' `
+  -SecretValue (ConvertTo-SecureString -String $env:ADSecGroup -AsPlainText -Force) -Tag @{CustomerID = "$env:CustomerID"}
+
+Set-AzKeyVaultSecret -VaultName $kvname -Name 'ADServerName' `
+  -SecretValue (ConvertTo-SecureString -String $env:ADServerName -AsPlainText -Force) -Tag @{CustomerID = "$env:CustomerID"}
+
+Set-AzKeyVaultSecret -VaultName $kvname -Name 'appPoolPassword' `
+  -SecretValue (ConvertTo-SecureString -String $env:appPoolPassword -AsPlainText -Force) -Tag @{CustomerID = "$env:CustomerID"}
+
+Set-AzKeyVaultSecret -VaultName $kvname -Name 'appPoolUserName' `
+  -SecretValue (ConvertTo-SecureString -String $env:appPoolUserName -AsPlainText -Force)  -Tag @{CustomerID = "$env:CustomerID"}
+
+Set-AzKeyVaultSecret -VaultName $kvname -Name 'CustomerDomain' `
+  -SecretValue (ConvertTo-SecureString -String $env:CustomerDomain -AsPlainText -Force) -Tag @{CustomerID = "$env:CustomerID"}
+
+Set-AzKeyVaultSecret -VaultName $kvname -Name 'CustomerID' `
+  -SecretValue (ConvertTo-SecureString -String $env:CustomerID -AsPlainText -Force) -Tag @{CustomerID = "$env:CustomerID"}
+
+Set-AzKeyVaultSecret -VaultName $kvname -Name 'CustomerLocationPrefix' `
+  -SecretValue (ConvertTo-SecureString -String $env:CustomerLocationPrefix -AsPlainText -Force) -Tag @{CustomerID = "$env:CustomerID"}
+
+Set-AzKeyVaultSecret -VaultName $kvname -Name 'CustomerNumber' `
+  -SecretValue (ConvertTo-SecureString -String $env:CustomerNumber -AsPlainText -Force) -Tag @{CustomerID = "$env:CustomerID"}
+
+Set-AzKeyVaultSecret -VaultName $kvname -Name 'DBPassword' `
+  -SecretValue (ConvertTo-SecureString -String $env:DBPassword -AsPlainText -Force) -Tag @{CustomerID = "$env:CustomerID"}
+
+Set-AzKeyVaultSecret -VaultName $kvname -Name 'DBUserId' `
+  -SecretValue (ConvertTo-SecureString -String "DCTSQLUser" -AsPlainText -Force) -Tag @{CustomerID = "$env:CustomerID"}
+
+Set-AzKeyVaultSecret -VaultName $kvname -Name 'DBVMName' `
+  -SecretValue (ConvertTo-SecureString -String $env:DBVMName -AsPlainText -Force) -Tag @{CustomerID = "$env:CustomerID"}
+
+Set-AzKeyVaultSecret -VaultName $kvname -Name 'DCTServerPassword' `
+  -SecretValue (ConvertTo-SecureString -String $DCTServerPassword -AsPlainText -Force) -Tag @{CustomerID = "$env:CustomerID"}
+
+Set-AzKeyVaultSecret -VaultName $kvname -Name 'dctServerUser' `
+  -SecretValue (ConvertTo-SecureString -String $env:dctServerUser -AsPlainText -Force) -Tag @{CustomerID = "$env:CustomerID"}
+
+Set-AzKeyVaultSecret -VaultName $kvname -Name 'location' `
+  -SecretValue (ConvertTo-SecureString -String $location -AsPlainText -Force) -Tag @{CustomerID = "$env:CustomerID"}
+
+Set-AzKeyVaultSecret -VaultName $kvname -Name 'OctoAPIKey' `
+  -SecretValue (ConvertTo-SecureString -String $env:OctoAPIKey -AsPlainText -Force) -Tag @{CustomerID = "$env:CustomerID"}
+
+Set-AzKeyVaultSecret -VaultName $kvname -Name 'OctoURL' `
+  -SecretValue (ConvertTo-SecureString -String $env:OctoURL -AsPlainText -Force) -Tag @{CustomerID = "$env:CustomerID"}
+
+Set-AzKeyVaultSecret -VaultName $kvname -Name 'CustOctoAPIKey' `
+  -SecretValue (ConvertTo-SecureString -String $env:CustOctoAPIKey -AsPlainText -Force) -Tag @{CustomerID = "$env:CustomerID"}
+
+Set-AzKeyVaultSecret -VaultName $kvname -Name 'CustOctoURL' `
+  -SecretValue (ConvertTo-SecureString -String $env:CustOctoURL -AsPlainText -Force) -Tag @{CustomerID = "$env:CustomerID"}
+
+Set-AzKeyVaultSecret -VaultName $kvname -Name 'OUPath' `
+  -SecretValue (ConvertTo-SecureString -String $env:OUPath -AsPlainText -Force) -Tag @{CustomerID = "$env:CustomerID"}
+
+Set-AzKeyVaultSecret -VaultName $kvname -Name 'SearchEngineUrl' `
+  -SecretValue (ConvertTo-SecureString -String $SearchEngineUrl -AsPlainText -Force) -Tag @{CustomerID = "$env:CustomerID"}
+
+Set-AzKeyVaultSecret -VaultName $kvname -Name 'SearchServiceKey' `
+  -SecretValue (ConvertTo-SecureString -String $env:SearchServiceKey -AsPlainText -Force) -Tag @{CustomerID = "$env:CustomerID"}
+
+Set-AzKeyVaultSecret -VaultName $kvname -Name 'Timezone' `
+  -SecretValue (ConvertTo-SecureString -String $Timezone -AsPlainText -Force) -Tag @{CustomerID = "$env:CustomerID"}
+
+Set-AzKeyVaultSecret -VaultName $kvname -Name 'VirtualMachineSize' `
+  -SecretValue (ConvertTo-SecureString -String "Standard_D8AS_V4" -AsPlainText -Force) -Tag @{CustomerID = "$env:CustomerID"}
+
+Set-AzKeyVaultSecret -VaultName $kvname -Name 'virtualNetworkName' `
+  -SecretValue (ConvertTo-SecureString -String $virtualNetworkName -AsPlainText -Force) -Tag @{CustomerID = "$env:CustomerID"}
+
+if (!$env:CmnStrgAct)
+{Write-Output CmnStrgAct not available}
+else
+{
+Set-AzKeyVaultSecret -VaultName $kvname -Name 'CmnStrgAct' `
+  -SecretValue (ConvertTo-SecureString -String $env:CmnStrgAct -AsPlainText -Force) -Tag @{CustomerID = "$env:CustomerID"}
+}
+
+if (!$env:diagstrgAct)
+{Write-Output diagstrgAct not available}
+else
+{
+Set-AzKeyVaultSecret -VaultName $kvname -Name 'diagstrgAct' `
+  -SecretValue (ConvertTo-SecureString -String $env:diagstrgAct -AsPlainText -Force) -Tag @{CustomerID = "$env:CustomerID"}
+}
+
+if (!$env:DBListener)
+{Write-Output DBListener not available}
+else
+{
+Set-AzKeyVaultSecret -VaultName $kvname -Name 'DBListener' `
+  -SecretValue (ConvertTo-SecureString -String $env:DBListener -AsPlainText -Force) -Tag @{CustomerID = "$env:CustomerID"}
+}
+
+if (!$env:InsightsDBServerName)
+{Write-Output DBListener not available}
+else
+{
+Set-AzKeyVaultSecret -VaultName $kvname -Name 'InsightsDBServerName' `
+  -SecretValue (ConvertTo-SecureString -String $env:InsightsDBServerName -AsPlainText -Force) -Tag @{CustomerID = "$env:CustomerID"}
+}
+
+#############Finish####################################
