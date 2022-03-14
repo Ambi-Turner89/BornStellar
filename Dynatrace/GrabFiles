@@ -1,0 +1,19 @@
+$container_name = 'dynatrace'
+$connection_string = 'DefaultEndpointsProtocol=https;AccountName=***ACCTNAME****;AccountKey=**ACCT Key***'
+$storage_account = New-AzStorageContext -ConnectionString $connection_string
+# Get the blobs list and then sort them by last modified date descending
+
+######################################################## 
+#First blob in that list would be the last modified.
+#$blobs = Get-AzStorageBlob -Container $container_name -Context $storage_account  | sort @{expression="LastModified";Descending=$true}
+# First blob in that list would be the last modified.
+#$latestBlob = $blobs[0] ******we no longer need this line
+#########################################################
+
+$blobs = Get-AzStorageBlob -Container $container_name -Context $storage_account | where name -like *$env:infraenvironment*
+
+$edited = $blobs.name -replace "Dynatrace-OneAgent-Windows-" , ''
+$Dynaversion = $edited.split('_')[0]
+
+#write this variable so its accessible elsewhere in the pipeline
+Write-Host "##vso[task.setvariable variable=DynaVersion]$DynaVersion"
